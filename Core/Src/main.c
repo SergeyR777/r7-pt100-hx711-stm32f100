@@ -23,6 +23,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
+#include "adc_hx711.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -59,6 +61,14 @@ static void MX_USART1_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+int __io_putchar(int ch)
+{
+	while (!LL_USART_IsActiveFlag_TXE(USART2))
+	{};
+	LL_USART_TransmitData8(USART2, ch);
+	return 0;
+}
 
 /* USER CODE END 0 */
 
@@ -107,17 +117,18 @@ int main(void)
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
 
+  // инициализация ADC
+  ADC_HX711_Init();
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  printf("Digital converter PT100\r\n");
+
   while (1)
   {
-	  LL_GPIO_SetOutputPin(LED_GPIO_Port, LED_Pin);
-	  LL_mDelay(500);
-
-	  LL_GPIO_ResetOutputPin(LED_GPIO_Port, LED_Pin);
-	  LL_mDelay(100);
+	  LL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+	  ADC_HX711_Process();
 
     /* USER CODE END WHILE */
 
