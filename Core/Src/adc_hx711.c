@@ -19,63 +19,110 @@
 #define DATA2_Port	HX711_DATA2_GPIO_Port
 #define DATA2_Pin	HX711_DATA2_Pin
 
-static int value_ch1;	// для прлучения значения с АЦП
-static int value_ch1a;	// Канал A
-static int value_ch1b;	// Канал B
-static int value_ch1a_old;	// Канал A - предыдущие значение
+typedef struct {
+	float rt;
+	float t;
+	int value_chA;		// Канал A
+	int value_chB;		// Канал B
+	int value_chA_prev;	// Канал A - предыдущие значение
+	int errno;			// Ошибка преобразования.
+} HX711_Channel_t;
 
+static HX711_Channel_t ch1;
+static HX711_Channel_t ch2;
+
+static int value_ch1;
 static int value_ch2;
-static int value_ch2a;
-static int value_ch2b;
-static int value_ch2a_old;
 
-static int ADC_HX711_CheckAndCalculate(int va, int vb, int va_old);
+static int ADC_HX711_CheckAndCalculate(HX711_Channel_t *ch);
+static void ADC_HX711_PrintInfo(HX711_Channel_t *ch);
 
 /*
  * Инициализация АЦП
  */
 void ADC_HX711_Init() {
+	// запускаем АЦП
 	ADC_HX711_ReadValueDouble(HX711_NEXT_B_32x, &value_ch1, &value_ch2);
+
+	// Запускаем ШИМ
+	LL_TIM_EnableCounter(TIM3);
+	LL_TIM_OC_SetCompareCH1(TIM3, 0);
+	LL_TIM_OC_SetCompareCH2(TIM3, 0);
+	LL_TIM_EnableAllOutputs(TIM3);
+	LL_TIM_CC_EnableChannel(TIM3, LL_TIM_CHANNEL_CH1 | LL_TIM_CHANNEL_CH2);
+
+	// ЦАП
+	LL_DAC_Enable(DAC1, LL_DAC_CHANNEL_1);
+	LL_DAC_Enable(DAC1, LL_DAC_CHANNEL_2);
+	LL_DAC_ConvertDualData12RightAligned(DAC1, 0, 0);
 }
 
 /*
  * Процесс получения значений с АЦП и вычисление температуры
+ * Пока простые циклы ожиданя без таймаутов
  */
 void ADC_HX711_Process() {
+	// получаем значение с канала B обоих АЦП
 	while (!ADC_HX711_IsReady()) {
 	};
-	ADC_HX711_ReadValueDouble(HX711_NEXT_B_32x, &value_ch1b, &value_ch2b);
+	ADC_HX711_ReadValueDouble(HX711_NEXT_B_32x, &ch1.value_chB, &ch2.value_chB);
 	while (!ADC_HX711_IsReady()) {
 	};
 	ADC_HX711_ReadValueDouble(HX711_NEXT_A_64x, &value_ch1, &value_ch2);
-	value_ch1b += value_ch1;
-	value_ch2b += value_ch2;
+	ch1.value_chB += value_ch1;
+	ch2.value_chB += value_ch2;
 
-	//LL_mDelay(2);
-
+	// получаем значение с канала A обоих АЦП
 	while (!ADC_HX711_IsReady()) {
 	};
-	ADC_HX711_ReadValueDouble(HX711_NEXT_A_64x, &value_ch1a, &value_ch2a);
+	ADC_HX711_ReadValueDouble(HX711_NEXT_A_64x, &ch1.value_chA, &ch2.value_chA);
 	while (!ADC_HX711_IsReady()) {
 	};
 	ADC_HX711_ReadValueDouble(HX711_NEXT_B_32x, &value_ch1, &value_ch2);
-	value_ch1a += value_ch1;
-	value_ch2a += value_ch2;
+	ch1.value_chA += value_ch1;
+	ch2.value_chA += value_ch2;
 
-	printf("CH1: ");
-	ADC_HX711_CheckAndCalculate(value_ch1a, value_ch1b, value_ch1a_old);
+	ADC_HX711_CheckAndCalculate(&ch1);
+	ADC_HX711_CheckAndCalculate(&ch2);
 
-	printf("CH2: ");
-	ADC_HX711_CheckAndCalculate(value_ch2a, value_ch2b, value_ch2a_old);
+	// выводим информацию по каналам
+	printf("CH1  ");
+	ADC_HX711_PrintInfo(&ch1);
+	printf("      CH2  ");
+	ADC_HX711_PrintInfo(&ch2);
+	printf("\r\n");
 
-	value_ch1a_old = value_ch1a;
-	value_ch2a_old = value_ch2a;
+	// Значение выходов в соответствии с таблицей.
+	// Пока таблицы нет - просто линейный график от 0 до 500 градусов Цельсия
+
+	float k = 8191.0f / 500.0f;
+
+	int v1 = ch1.errno == HX711_OK ? (int)(ch1.t * k) : 0;
+	if (v1 < 0) {
+		v1 = 0;
+	} else if (v1 > 8191) {
+		v1 = 8191;
+	}
+
+	int v2 = ch2.errno == HX711_OK ? (int)(ch2.t * k) : 0;
+	if (v2 < 0) {
+		v2 = 0;
+	} else if (v2 > 8191) {
+		v2 = 8191;
+	}
+
+	// ШИМ (13 бит)
+	LL_TIM_OC_SetCompareCH1(TIM3, (uint32_t)v1);
+	LL_TIM_OC_SetCompareCH2(TIM3, (uint32_t)v2);
+
+	// ЦАП (12 бит)
+	LL_DAC_ConvertDualData12RightAligned(DAC1, ((uint32_t)v1) >> 1, ((uint32_t)v2) >> 1);
 }
 
 /*
  * Вычисление температуры
  */
-static int ADC_HX711_CheckAndCalculate(int va, int vb, int va_old) {
+static int ADC_HX711_CheckAndCalculate(HX711_Channel_t *ch) {
 	// теперь B / A = сопротивление PT100 относительно резистора 100 Ом
 	// Сейчас число 25 бит
 	// B сдвигаем влево на 4 бита - лучше умножить на 100, чтобы точку выравнять до единиц Ома
@@ -84,30 +131,31 @@ static int ADC_HX711_CheckAndCalculate(int va, int vb, int va_old) {
 
 	// проверяем правильность подключения.
 	// Если обрыв в цепи, значение опорного сопротивления будет близко к нулю.
-	if (abs(va) < 100000) {
+	if (abs(ch->value_chA) < 100000) {
 		// R0 - маленькое - обрыв датчика
-		printf("Error - Sensor circuit open\r\n");
-		return HX711_ERROR_OPEN;
-	} else if (abs(vb) < 100000) {
+		ch->errno = HX711_ERROR_OPEN;
+	} else if (abs(ch->value_chB) < 100000) {
 		// Rt - маленькое - замыкание датчика
-		printf("Error - Sensor circuit short\r\n");
-		return HX711_ERROR_SHORT;
-	} else if (vb > 0xE80000) // 24 бита со знаком * 2
+		ch->errno = HX711_ERROR_SHORT;
+	} else if (ch->value_chB > 0xE80000) // 24 бита со знаком * 2
 			{
-		printf("Error - Exceeding the value limit\r\n");
-		return HX711_ERROR_LIMIT;
-	} else if ((va < 0) || (vb < 0)) {
+		ch->errno = HX711_ERROR_LIMIT;
+	} else if ((ch->value_chA < 0) || (ch->value_chB < 0)) {
 		// Полярность поменялась - замыкание на + или отказ АЦП
-		printf("Error - Sensor value cannot be obtained\r\n");
-		return HX711_ERROR_UNKNOWN;
-	};
+		ch->errno = HX711_ERROR_UNKNOWN;
+	} else {
+		ch->errno = HX711_OK;
+	}
 
-	int intk = ((vb >> 2) * 100) / (va >> 11); // число с фиксированной точкой 24.8 - в Омах
+	if (ch->errno != HX711_OK)
+		return ch->errno;
 
-	float kr = (vb >> 2) / (((va + va_old) >> 12) * 256.0); // измеренное сопротивление термосопротивления (отношение Rt/R0)
+	//int intk = ((ch->value_chB >> 2) * 100) / (ch->value_chA >> 11); // число с фиксированной точкой 24.8 - в Омах
+
+	float kr = (ch->value_chB >> 2) / (((ch->value_chA + ch->value_chA_prev) >> 12) * 256.0); // измеренное сопротивление термосопротивления (отношение Rt/R0)
 
 	float r0 = 100.0; // опорное сопротивление
-	float rt = r0 * kr;
+	ch->rt = r0 * kr;
 
 	float k = 1.0 / kr;	// отношение R0/Rt
 
@@ -123,11 +171,14 @@ static int ADC_HX711_CheckAndCalculate(int va, int vb, int va_old) {
 	float sqrtD = sqrtf(D);
 
 	float t1 = (-xb + sqrtD) / (2.0 * xa);
-	//float t2 = (-xb - sqrtD) / (2.0 * xa); Это не наше решение
+	//float t2 = (-xb - sqrtD) / (2.0 * xa); Это не наше решение уравнения
 
-	printf("ADC Value A: %d    B: %d    k: %d     Rt: %f    t: %f\r\n", va, vb, intk, rt, t1);
+	//printf("ADC Value A: %8d    B: %8d    k: %8d     Rt: %4.2f    t: %4.2f\r\n", ch->value_chA, ch->value_chB, intk, rt, t1);
 
-	return HX711_OK;
+	ch->t = t1;
+	ch->value_chA_prev = ch->value_chA;
+
+	return ch->errno;
 }
 
 /*
@@ -175,5 +226,35 @@ void ADC_HX711_ReadValueDouble(int next_ch, int *adc1, int *adc2) {
 
 	*adc1 = (int) value1;
 	*adc2 = (int) value2;
+}
+
+static void ADC_HX711_PrintInfo(HX711_Channel_t *ch)
+{
+	switch (ch->errno) {
+		case HX711_OK:
+			printf("rt: %7.2f  t: %7.2f", ch->rt, ch->t);
+			break;
+
+		case HX711_ERROR_OPEN:
+			printf("-------- OPEN ---------");
+			break;
+
+		case HX711_ERROR_SHORT:
+			printf("-------- SHORT --------");
+			break;
+
+		case HX711_ERROR_LIMIT:
+			printf("------ OVERHEAT -------");
+			break;
+
+		case HX711_ERROR_UNKNOWN:
+			printf("------ ADC ERROR ------");
+			break;
+
+		default:
+			printf("-------- ERROR --------");
+			break;
+	}
+
 }
 

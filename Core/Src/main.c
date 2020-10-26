@@ -23,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
+#include <stdio.h>
 #include "adc_hx711.h"
 
 /* USER CODE END Includes */
@@ -64,9 +65,9 @@ static void MX_USART1_UART_Init(void);
 
 int __io_putchar(int ch)
 {
-	while (!LL_USART_IsActiveFlag_TXE(USART2))
+	while (!LL_USART_IsActiveFlag_TXE(USART1))
 	{};
-	LL_USART_TransmitData8(USART2, ch);
+	LL_USART_TransmitData8(USART1, ch);
 	return 0;
 }
 
@@ -123,6 +124,7 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  printf("\r\n---------------------------------\r\n");
   printf("Digital converter PT100\r\n");
 
   while (1)
