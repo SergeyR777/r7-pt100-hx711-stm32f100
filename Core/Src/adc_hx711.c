@@ -12,6 +12,8 @@
 #include "main.h"
 #include "adc_hx711.h"
 
+//#define TEST_PILA
+
 #define CLK_Port	HX711_CLK_GPIO_Port
 #define CLK_Pin		HX711_CLK_Pin
 #define DATA1_Port	HX711_DATA1_GPIO_Port
@@ -33,6 +35,10 @@ static HX711_Channel_t ch2;
 
 static int value_ch1;
 static int value_ch2;
+
+#ifdef TEST_PILA
+static uint32_t tmpCnt = 0;
+#endif
 
 static int ADC_HX711_CheckAndCalculate(HX711_Channel_t *ch);
 static void ADC_HX711_PrintInfo(HX711_Channel_t *ch);
@@ -95,9 +101,20 @@ void ADC_HX711_Process() {
 	// Значение выходов в соответствии с таблицей.
 	// Пока таблицы нет - просто линейный график от 0 до 500 градусов Цельсия
 
-	float k = 8191.0f / 500.0f;
+	// Минимальное напряжение на выходе ОУ LM2904 = 0.65 В
+	// Максимальное напряжение на выходе ОУ LM2904 = 4.9 В
+
+	// 1.0 В == 0 градусов
+	// 4.8 В == 500 градусов
+	// 4.8-1.0 = 3.8
+	// k = 3.8/5.0 == 6225/8191
+	// offset = 1.0/5.0 == 1638/8191
+
+	float k = 6225.16f / 500.0f;
+	int offset = 1638;
 
 	int v1 = ch1.errno == HX711_OK ? (int)(ch1.t * k) : 0;
+	v1 += offset;
 	if (v1 < 0) {
 		v1 = 0;
 	} else if (v1 > 8191) {
@@ -105,18 +122,31 @@ void ADC_HX711_Process() {
 	}
 
 	int v2 = ch2.errno == HX711_OK ? (int)(ch2.t * k) : 0;
+	v2 += offset;
 	if (v2 < 0) {
 		v2 = 0;
 	} else if (v2 > 8191) {
 		v2 = 8191;
 	}
 
+#ifdef TEST_PILA
+	// ШИМ (13 бит)
+	LL_TIM_OC_SetCompareCH1(TIM3, tmpCnt);
+	LL_TIM_OC_SetCompareCH2(TIM3, tmpCnt);
+
+	// ЦАП (12 бит)
+	LL_DAC_ConvertDualData12RightAligned(DAC1, tmpCnt >> 1, tmpCnt >> 1);
+
+	tmpCnt += (8192 >> 5) - 1;
+	if (tmpCnt >= 8192) tmpCnt = 0;
+#else
 	// ШИМ (13 бит)
 	LL_TIM_OC_SetCompareCH1(TIM3, (uint32_t)v1);
 	LL_TIM_OC_SetCompareCH2(TIM3, (uint32_t)v2);
 
 	// ЦАП (12 бит)
 	LL_DAC_ConvertDualData12RightAligned(DAC1, ((uint32_t)v1) >> 1, ((uint32_t)v2) >> 1);
+#endif
 }
 
 /*
